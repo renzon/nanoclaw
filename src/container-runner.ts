@@ -158,13 +158,25 @@ function buildVolumeMounts(
     const sshConfig = path.join(sessionsDir, 'ssh_config');
     const gitconfig = path.join(sessionsDir, 'gitconfig');
     if (fs.existsSync(sshKey)) {
-      mounts.push({ hostPath: sshKey, containerPath: '/home/node/.ssh/id_ed25519', readonly: true });
+      mounts.push({
+        hostPath: sshKey,
+        containerPath: '/home/node/.ssh/id_ed25519',
+        readonly: true,
+      });
     }
     if (fs.existsSync(sshConfig)) {
-      mounts.push({ hostPath: sshConfig, containerPath: '/home/node/.ssh/config', readonly: true });
+      mounts.push({
+        hostPath: sshConfig,
+        containerPath: '/home/node/.ssh/config',
+        readonly: true,
+      });
     }
     if (fs.existsSync(gitconfig)) {
-      mounts.push({ hostPath: gitconfig, containerPath: '/home/node/.gitconfig', readonly: true });
+      mounts.push({
+        hostPath: gitconfig,
+        containerPath: '/home/node/.gitconfig',
+        readonly: true,
+      });
     }
   }
 
@@ -259,7 +271,10 @@ async function refreshOAuthToken(credPath: string): Promise<string | null> {
 
     if (!res.ok) {
       const body = await res.text();
-      logger.error({ status: res.status, body }, 'Failed to refresh OAuth token');
+      logger.error(
+        { status: res.status, body },
+        'Failed to refresh OAuth token',
+      );
       return null;
     }
 
@@ -276,7 +291,11 @@ async function refreshOAuthToken(credPath: string): Promise<string | null> {
     fs.writeFileSync(credPath, JSON.stringify(creds));
 
     // Update .env so it stays in sync
-    const envPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '.env');
+    const envPath = path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      '..',
+      '.env',
+    );
     if (fs.existsSync(envPath)) {
       let envContent = fs.readFileSync(envPath, 'utf-8');
       envContent = envContent.replace(
@@ -391,7 +410,11 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain, input.chatJid);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, group.containerConfig?.image);
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    group.containerConfig?.image,
+  );
 
   logger.debug(
     {

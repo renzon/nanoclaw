@@ -68,9 +68,15 @@ export async function sendPoolMessage(
     try {
       await poolApis[idx].setMyName(sender);
       await new Promise((r) => setTimeout(r, 2000));
-      logger.info({ sender, groupFolder, poolIndex: idx }, 'Assigned and renamed pool bot');
+      logger.info(
+        { sender, groupFolder, poolIndex: idx },
+        'Assigned and renamed pool bot',
+      );
     } catch (err) {
-      logger.warn({ sender, err }, 'Failed to rename pool bot (sending anyway)');
+      logger.warn(
+        { sender, err },
+        'Failed to rename pool bot (sending anyway)',
+      );
     }
   }
 
@@ -85,7 +91,10 @@ export async function sendPoolMessage(
         await api.sendMessage(numericId, text.slice(i, i + MAX_LENGTH));
       }
     }
-    logger.info({ chatId, sender, poolIndex: idx, length: text.length }, 'Pool message sent');
+    logger.info(
+      { chatId, sender, poolIndex: idx, length: text.length },
+      'Pool message sent',
+    );
   } catch (err) {
     logger.error({ chatId, sender, err }, 'Failed to send pool message');
   }
@@ -128,7 +137,10 @@ export class TelegramChannel implements Channel {
       const url = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
       const response = await fetch(url);
       if (!response.ok) {
-        logger.warn({ fileId, status: response.status }, 'Failed to download Telegram file');
+        logger.warn(
+          { fileId, status: response.status },
+          'Failed to download Telegram file',
+        );
         return null;
       }
 
@@ -142,7 +154,10 @@ export class TelegramChannel implements Channel {
       const buffer = Buffer.from(await response.arrayBuffer());
       fs.writeFileSync(filePath, buffer);
 
-      logger.info({ fileId, filePath, size: buffer.length }, 'Telegram file downloaded');
+      logger.info(
+        { fileId, filePath, size: buffer.length },
+        'Telegram file downloaded',
+      );
       return savedName;
     } catch (err) {
       logger.error({ fileId, err }, 'Error downloading Telegram file');
@@ -215,8 +230,15 @@ export class TelegramChannel implements Channel {
       }
 
       // Store chat metadata for discovery
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, chatName, 'telegram', isGroup);
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        chatName,
+        'telegram',
+        isGroup,
+      );
 
       // Only deliver full message for registered groups
       const group = this.opts.registeredGroups()[chatJid];
@@ -259,8 +281,15 @@ export class TelegramChannel implements Channel {
         'Unknown';
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
 
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -281,7 +310,11 @@ export class TelegramChannel implements Channel {
       if (ctx.chat.type === 'private') {
         const photos = ctx.message.photo;
         const largest = photos[photos.length - 1]; // highest resolution
-        const savedName = await this.downloadFile(largest.file_id, 'photo.jpg', ctx.chat.id);
+        const savedName = await this.downloadFile(
+          largest.file_id,
+          'photo.jpg',
+          ctx.chat.id,
+        );
         if (savedName) {
           storeNonText(ctx, `[Photo -> /workspace/uploads/${savedName}]`);
           return;
@@ -291,9 +324,7 @@ export class TelegramChannel implements Channel {
       storeNonText(ctx, '[Photo]');
     });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) =>
-      storeNonText(ctx, '[Voice message]'),
-    );
+    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', async (ctx) => {
       const name = ctx.message.document?.file_name || 'file';
@@ -303,9 +334,16 @@ export class TelegramChannel implements Channel {
 
       // Download in private chats only
       if (ctx.chat.type === 'private' && ctx.message.document?.file_id) {
-        const savedName = await this.downloadFile(ctx.message.document.file_id, name, ctx.chat.id);
+        const savedName = await this.downloadFile(
+          ctx.message.document.file_id,
+          name,
+          ctx.chat.id,
+        );
         if (savedName) {
-          storeNonText(ctx, `[Document: ${name} -> /workspace/uploads/${savedName}]`);
+          storeNonText(
+            ctx,
+            `[Document: ${name} -> /workspace/uploads/${savedName}]`,
+          );
           return;
         }
       }
