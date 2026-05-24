@@ -57,6 +57,7 @@ interface VolumeMount {
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
+  chatJid?: string,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -150,6 +151,35 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount SSH key and git config for main group (if they exist)
+  if (isMain) {
+    const sessionsDir = path.join(DATA_DIR, 'sessions', group.folder);
+    const sshKey = path.join(sessionsDir, 'ssh_key');
+    const sshConfig = path.join(sessionsDir, 'ssh_config');
+    const gitconfig = path.join(sessionsDir, 'gitconfig');
+    if (fs.existsSync(sshKey)) {
+      mounts.push({ hostPath: sshKey, containerPath: '/home/node/.ssh/id_ed25519', readonly: true });
+    }
+    if (fs.existsSync(sshConfig)) {
+      mounts.push({ hostPath: sshConfig, containerPath: '/home/node/.ssh/config', readonly: true });
+    }
+    if (fs.existsSync(gitconfig)) {
+      mounts.push({ hostPath: gitconfig, containerPath: '/home/node/.gitconfig', readonly: true });
+    }
+  }
+
+  // Mount Telegram uploads directory (read-only) so agents can read downloaded files
+  if (chatJid?.startsWith('tg:')) {
+    const numericId = chatJid.replace(/^tg:/, '');
+    const uploadsDir = path.join(DATA_DIR, 'uploads', numericId);
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    mounts.push({
+      hostPath: uploadsDir,
+      containerPath: '/workspace/uploads',
+      readonly: true,
+    });
+  }
+
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
@@ -200,21 +230,129 @@ function buildVolumeMounts(
 }
 
 /**
+ * Refresh the OAuth token using the refresh token from CLI credentials.
+ * Updates both ~/.claude/.credentials.json and .env with the new token.
+ */
+async function refreshOAuthToken(credPath: string): Promise<string | null> {
+  try {
+    const creds = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
+    const refreshToken = creds?.claudeAiOauth?.refreshToken;
+    if (!refreshToken) {
+      logger.warn('No refresh token found in CLI credentials');
+      return null;
+    }
+
+    logger.info('OAuth token expired or expiring soon, refreshing...');
+
+    const res = await fetch('https://platform.claude.com/v1/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-beta': 'oauth-2025-04-20',
+      },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      logger.error({ status: res.status, body }, 'Failed to refresh OAuth token');
+      return null;
+    }
+
+    const data = (await res.json()) as {
+      access_token: string;
+      refresh_token: string;
+      expires_in: number;
+    };
+
+    // Update credentials.json
+    creds.claudeAiOauth.accessToken = data.access_token;
+    creds.claudeAiOauth.refreshToken = data.refresh_token;
+    creds.claudeAiOauth.expiresAt = Date.now() + data.expires_in * 1000;
+    fs.writeFileSync(credPath, JSON.stringify(creds));
+
+    // Update .env so it stays in sync
+    const envPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '.env');
+    if (fs.existsSync(envPath)) {
+      let envContent = fs.readFileSync(envPath, 'utf-8');
+      envContent = envContent.replace(
+        /^CLAUDE_CODE_OAUTH_TOKEN=.*/m,
+        `CLAUDE_CODE_OAUTH_TOKEN="${data.access_token}"`,
+      );
+      fs.writeFileSync(envPath, envContent);
+    }
+
+    logger.info(
+      { expiresAt: new Date(creds.claudeAiOauth.expiresAt).toISOString() },
+      'OAuth token refreshed successfully',
+    );
+    return data.access_token;
+  } catch (err) {
+    logger.error({ err }, 'Error refreshing OAuth token');
+    return null;
+  }
+}
+
+/**
  * Read allowed secrets from .env for passing to the container via stdin.
  * Secrets are never written to disk or mounted as files.
+ *
+ * For OAuth tokens, prefers the CLI's credentials file (~/.claude/.credentials.json)
+ * over .env. Automatically refreshes expired tokens using the refresh token.
  */
-function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+async function readSecrets(): Promise<Record<string, string>> {
+  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+
+  // Prefer fresh OAuth token from CLI credentials, auto-refreshing if expired
+  try {
+    const credPath = path.join(
+      process.env.HOME || require('os').homedir(),
+      '.claude',
+      '.credentials.json',
+    );
+    if (fs.existsSync(credPath)) {
+      const creds = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
+      const expiresAt = creds?.claudeAiOauth?.expiresAt ?? 0;
+      const token = creds?.claudeAiOauth?.accessToken;
+
+      // Refresh if token expires within 30 minutes
+      if (Date.now() > expiresAt - 30 * 60 * 1000) {
+        const newToken = await refreshOAuthToken(credPath);
+        if (newToken) {
+          secrets.CLAUDE_CODE_OAUTH_TOKEN = newToken;
+        } else if (token) {
+          secrets.CLAUDE_CODE_OAUTH_TOKEN = token;
+        }
+      } else if (token) {
+        secrets.CLAUDE_CODE_OAUTH_TOKEN = token;
+      }
+    }
+  } catch (err) {
+    logger.debug({ err }, 'Could not read CLI credentials, using .env token');
+  }
+
+  return secrets;
 }
 
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  image?: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Pass GitHub token so gh CLI works inside the container
+  const ghToken = readEnvFile(['GH_TOKEN']).GH_TOKEN;
+  if (ghToken) {
+    args.push('-e', `GH_TOKEN=${ghToken}`);
+  }
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
@@ -234,7 +372,7 @@ function buildContainerArgs(
     }
   }
 
-  args.push(CONTAINER_IMAGE);
+  args.push(image || CONTAINER_IMAGE);
 
   return args;
 }
@@ -250,10 +388,10 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const mounts = buildVolumeMounts(group, input.isMain, input.chatJid);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, group.containerConfig?.image);
 
   logger.debug(
     {
@@ -281,6 +419,9 @@ export async function runContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
+  // Read secrets before entering the Promise callback (which isn't async)
+  const secrets = await readSecrets();
+
   return new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -294,7 +435,7 @@ export async function runContainerAgent(
     let stderrTruncated = false;
 
     // Pass secrets via stdin (never written to disk or mounted as files)
-    input.secrets = readSecrets();
+    input.secrets = secrets;
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
     // Remove secrets from input so they don't appear in logs
