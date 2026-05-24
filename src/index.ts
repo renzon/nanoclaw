@@ -20,6 +20,7 @@ import {
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
+  clearSession,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -278,10 +279,25 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
-  // Wrap onOutput to track session ID from streamed results
+  // Wrap onOutput to track session ID from streamed results.
+  // When status=error and newSessionId matches the input sessionId, it means
+  // the agent-runner failed before producing a new session (typically a resume
+  // failure — e.g. JSONL deleted). Clearing here breaks the retry loop that
+  // would otherwise keep re-resuming the same broken session forever.
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
-        if (output.newSessionId) {
+        if (
+          output.status === 'error' &&
+          sessionId &&
+          output.newSessionId === sessionId
+        ) {
+          delete sessions[group.folder];
+          clearSession(group.folder);
+          logger.warn(
+            { group: group.name, sessionId },
+            'Resume failed — cleared stored session so next run starts fresh',
+          );
+        } else if (output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
         }
@@ -305,7 +321,18 @@ async function runAgent(
       wrappedOnOutput,
     );
 
-    if (output.newSessionId) {
+    if (
+      output.status === 'error' &&
+      sessionId &&
+      output.newSessionId === sessionId
+    ) {
+      delete sessions[group.folder];
+      clearSession(group.folder);
+      logger.warn(
+        { group: group.name, sessionId },
+        'Resume failed — cleared stored session so next run starts fresh',
+      );
+    } else if (output.newSessionId) {
       sessions[group.folder] = output.newSessionId;
       setSession(group.folder, output.newSessionId);
     }
